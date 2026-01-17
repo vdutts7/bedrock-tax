@@ -11,6 +11,6 @@ CREATE TABLE devdocs.chunks (
   file            text,
   title           text,
   url             text,
-  embedding       vector(512),
+  embedding       vector(1024),
   ingested_at     timestamptz DEFAULT now()
 );
