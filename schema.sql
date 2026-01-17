@@ -15,5 +15,8 @@ CREATE TABLE devdocs.chunks (
   url             text,
   source          text,
   embedding       vector(1024),
+  searchable      tsvector GENERATED ALWAYS AS (
+    to_tsvector('english', coalesce(title, '') || ' ' || coalesce(text, ''))
+  ) STORED,
   ingested_at     timestamptz DEFAULT now()
 );
