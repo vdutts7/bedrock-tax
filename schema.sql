@@ -7,10 +7,13 @@ CREATE TABLE devdocs.chunks (
   text            text,
   domain          text,
   tool            text,
+  tool_package    text,
   doc_set         text,
+  doc_set_title   text,
   file            text,
   title           text,
   url             text,
+  source          text,
   embedding       vector(1024),
   ingested_at     timestamptz DEFAULT now()
 );
