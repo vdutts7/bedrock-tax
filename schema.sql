@@ -60,3 +60,39 @@ CREATE TABLE security_rules.owners (
   resource_url  text,
   ingested_at   timestamptz DEFAULT now()
 );
+
+
+-- code_intel: code repository metadata (chunks ~5,600 + commits ~7,900 + contributors ~900 + branches ~600)
+CREATE SCHEMA IF NOT EXISTS code_intel;
+
+CREATE TABLE code_intel.chunks (
+  id              text PRIMARY KEY,
+  text            text,
+  tool            text,
+  file            text,
+  title           text,
+  url             text,
+  embedding       vector(1024),
+  ingested_at     timestamptz DEFAULT now()
+);
+
+CREATE TABLE code_intel.commits (
+  id              text PRIMARY KEY,
+  message         text,
+  author          text,
+  committed_at    timestamptz,
+  ingested_at     timestamptz DEFAULT now()
+);
+
+CREATE TABLE code_intel.contributors (
+  id              text PRIMARY KEY,
+  name            text,
+  email           text,
+  ingested_at     timestamptz DEFAULT now()
+);
+
+CREATE TABLE code_intel.branches (
+  name            text PRIMARY KEY,
+  head_commit     text,
+  ingested_at     timestamptz DEFAULT now()
+);
