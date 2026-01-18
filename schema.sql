@@ -1,14 +1,22 @@
+-- bedrock-tax: aurora pgvector schema
+-- as of 2026-01-29. three schemas, ~8,800 embedded rows.
+-- prod access: RDS Data API (ExecuteStatementCommand), no connection pool.
+-- embedding: amazon.titan-embed-text-v2:0, 1024 dimensions.
+-- one-time embed cost: ~$0.20 for all rows.
+-- query cost: $0 (RDS Data API, no Bedrock Retrieve).
+
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- devdocs: documentation chunks (~7,700 rows)
 CREATE SCHEMA IF NOT EXISTS devdocs;
 
 CREATE TABLE devdocs.chunks (
-  id              text PRIMARY KEY,
+  id              text PRIMARY KEY,  -- e.g. devdocs-cdk-developer_guide-deploy-000
   text            text,
   domain          text,
-  tool            text,
+  tool            text,              -- e.g. cdk, lambda, s3, ecs
   tool_package    text,
-  doc_set         text,
+  doc_set         text,              -- e.g. user_guide, api_guide, cli_guide
   doc_set_title   text,
   file            text,
   title           text,
@@ -21,6 +29,12 @@ CREATE TABLE devdocs.chunks (
   ingested_at     timestamptz DEFAULT now()
 );
 
+CREATE INDEX chunks_tool_idx       ON devdocs.chunks (tool);
+CREATE INDEX chunks_doc_set_idx    ON devdocs.chunks (doc_set);
+CREATE INDEX chunks_search_idx     ON devdocs.chunks USING gin (searchable);
+CREATE INDEX chunks_embed_idx      ON devdocs.chunks USING ivfflat (embedding vector_cosine_ops);
+-- ivfflat over hnsw: right-sized for <10K vectors. switch at 100K+.
+
 
 -- security_rules: compliance rules (~1,100 rows) + owners (~120 rows)
 CREATE SCHEMA IF NOT EXISTS security_rules;
@@ -31,7 +45,7 @@ CREATE TABLE security_rules.rules (
   description           text,
   remediation           text,
   threat                text,
-  severity              text,
+  severity              text,         -- CRITICAL, HIGH, MEDIUM, LOW
   priority              text,
   state                 text,
   domain                text,
@@ -50,6 +64,13 @@ CREATE TABLE security_rules.rules (
   ) STORED,
   ingested_at           timestamptz DEFAULT now()
 );
+
+CREATE INDEX rules_severity_idx    ON security_rules.rules (severity);
+CREATE INDEX rules_priority_idx    ON security_rules.rules (priority);
+CREATE INDEX rules_state_idx       ON security_rules.rules (state);
+CREATE INDEX rules_search_idx      ON security_rules.rules USING gin (searchable);
+CREATE INDEX rules_owners_idx      ON security_rules.rules USING gin (owners);
+CREATE INDEX rules_embed_idx       ON security_rules.rules USING ivfflat (embedding vector_cosine_ops);
 
 CREATE TABLE security_rules.owners (
   name          text,
@@ -96,3 +117,5 @@ CREATE TABLE code_intel.branches (
   head_commit     text,
   ingested_at     timestamptz DEFAULT now()
 );
+
+CREATE INDEX code_chunks_embed_idx ON code_intel.chunks USING ivfflat (embedding vector_cosine_ops);
