@@ -12,8 +12,8 @@ import boto3
 import psycopg
 from pgvector.psycopg import register_vector
 
-EMBED_MODEL = "amazon.titan-embed-text-v1:0"
-EMBED_DIM = 512
+EMBED_MODEL = "amazon.titan-embed-text-v2:0"
+EMBED_DIM = 1024
 
 
 def chunks_from_jsonl(path: pathlib.Path) -> Iterable[dict]:
