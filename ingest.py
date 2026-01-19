@@ -76,6 +76,7 @@ def ingest_docs(cur, bedrock, rows: list[dict]) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Embed and ingest into Aurora pgvector")
     ap.add_argument("--source", required=True, help="JSONL file or directory")
+    ap.add_argument("--schema", required=True, choices=["devdocs", "security_rules"])
     ap.add_argument("--dsn", default=os.environ.get("DATABASE_URL"))
     ap.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
     args = ap.parse_args()
@@ -88,7 +89,7 @@ def main() -> int:
         chunks_from_dir(src) if src.is_dir()
         else chunks_from_jsonl(src)
     )
-    print(f"ingest: {len(rows)} rows")
+    print(f"ingest: {len(rows)} rows -> {args.schema}")
 
     with psycopg.connect(args.dsn) as conn:
         register_vector(conn)
