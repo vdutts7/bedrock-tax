@@ -1,4 +1,9 @@
-"""Titan embed -> Aurora pgvector. one-time ingest."""
+"""Titan v2 embed -> Aurora pgvector. one-time ingest.
+
+~$0.20 for ~8,800 rows.
+Model: amazon.titan-embed-text-v2:0, 1024 dimensions.
+Batch sequential with 150ms inter-call delay (Bedrock rate limit).
+"""
 
 from __future__ import annotations
 
@@ -6,6 +11,7 @@ import argparse
 import json
 import os
 import pathlib
+import time
 from typing import Iterable
 
 import boto3
@@ -14,6 +20,8 @@ from pgvector.psycopg import register_vector
 
 EMBED_MODEL = "amazon.titan-embed-text-v2:0"
 EMBED_DIM = 1024
+BATCH_SIZE = 50
+THROTTLE_MS = 150
 
 
 def chunks_from_jsonl(path: pathlib.Path) -> Iterable[dict]:
@@ -69,7 +77,9 @@ def ingest_docs(cur, bedrock, rows: list[dict]) -> None:
                 r.get("url"), r.get("tool"), r.get("doc_set"), vec,
             ),
         )
-        if (i + 1) % 50 == 0:
+        if i < len(rows) - 1:
+            time.sleep(THROTTLE_MS / 1000)
+        if (i + 1) % BATCH_SIZE == 0:
             print(f"  {i + 1}/{len(rows)}")
 
 
@@ -91,13 +101,16 @@ def main() -> int:
     )
     print(f"ingest: {len(rows)} rows -> {args.schema}")
 
+    t0 = time.time()
     with psycopg.connect(args.dsn) as conn:
         register_vector(conn)
         with conn.cursor() as cur:
             ingest_docs(cur, bedrock, rows)
             conn.commit()
 
-    print(f"done: {len(rows)} rows")
+    elapsed = time.time() - t0
+    cost_est = len(rows) * 0.000025
+    print(f"done: {len(rows)} rows, {elapsed:.1f}s, ~${cost_est:.2f} embed cost")
     return 0
 
 
