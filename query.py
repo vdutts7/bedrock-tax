@@ -61,3 +61,13 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# -- query templates (machine-readable, agent reads these to pick a query) --
+QUERY_TEMPLATES = {
+    "by_tool":         "SELECT id, title, doc_set, LEFT(text, 500) as preview, url FROM devdocs.chunks WHERE tool = '{tool}' LIMIT {limit}",
+    "by_doc_set":      "SELECT id, tool, title, LEFT(text, 500) as preview, url FROM devdocs.chunks WHERE doc_set = '{doc_set}' LIMIT {limit}",
+    "fulltext_search": "SELECT tool, title, LEFT(text, 500) as preview, url FROM devdocs.chunks WHERE searchable @@ to_tsquery('english', '{terms}') LIMIT {limit}",
+    "list_tools":      "SELECT DISTINCT tool, COUNT(*) as chunk_count FROM devdocs.chunks GROUP BY tool ORDER BY chunk_count DESC",
+    "list_doc_sets":   "SELECT DISTINCT doc_set, COUNT(*) as chunk_count FROM devdocs.chunks GROUP BY doc_set ORDER BY chunk_count DESC",
+}
