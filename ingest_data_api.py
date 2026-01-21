@@ -106,7 +106,6 @@ def ingest_row(rds, bedrock, cluster_arn, secret_arn, database,
         raise ValueError(f"unknown schema: {schema}")
 
     execute_sql(rds, cluster_arn, secret_arn, database, sql, params)
-    print(f"  debug: embedding row {i}")
 
     if (i + 1) % BATCH_SIZE == 0 or i == total - 1:
         print(f"  {i + 1}/{total}")
