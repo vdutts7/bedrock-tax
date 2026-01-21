@@ -143,7 +143,7 @@ def main() -> int:
     )
     ap.add_argument("query", help="Search query or filter value")
     ap.add_argument("--mode", choices=["semantic", "fulltext", "structured"], default="semantic")
-    ap.add_argument("--schema", default="devdocs", choices=["devdocs", "security_rules"])
+    ap.add_argument("--schema", default="devdocs", choices=["devdocs", "security_rules", "code_intel"])
     ap.add_argument("--table", default="chunks")
     ap.add_argument("--tool", help="Filter by tool name (semantic/structured)")
     ap.add_argument("--column", default="tool", help="Column for structured mode")
