@@ -67,7 +67,6 @@ def embed(bedrock, text: str) -> list[float]:
 def ingest_docs(cur, bedrock, rows: list[dict]) -> None:
     for i, r in enumerate(rows):
         vec = embed(bedrock, r.get("text", ""))
-        print(f"  embedding: {vec[:5]}...")
         cur.execute(
             """INSERT INTO devdocs.chunks
                 (text, title, file, url, tool, doc_set, embedding)
