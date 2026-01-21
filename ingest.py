@@ -1,4 +1,4 @@
-"""Titan v2 embed -> Aurora pgvector. one-time ingest.
+"""Titan v2 embed → Aurora pgvector. one-time ingest.
 
 ~$0.20 for ~8,800 rows.
 Model: amazon.titan-embed-text-v2:0, 1024 dimensions.
@@ -21,7 +21,7 @@ from pgvector.psycopg import register_vector
 EMBED_MODEL = "amazon.titan-embed-text-v2:0"
 EMBED_DIM = 1024
 BATCH_SIZE = 50
-THROTTLE_MS = 150
+THROTTLE_MS = 150  # inter-call delay to prevent Bedrock rate limiting
 
 
 def chunks_from_jsonl(path: pathlib.Path) -> Iterable[dict]:
@@ -43,7 +43,7 @@ def chunks_from_dir(root: pathlib.Path) -> Iterable[dict]:
         if not text.strip():
             continue
         yield {
-            "text": text[:8000],
+            "text": text[:8000],  # Titan v2 input cap
             "title": p.name,
             "file": str(p.relative_to(root)),
             "url": "",
@@ -83,6 +83,22 @@ def ingest_docs(cur, bedrock, rows: list[dict]) -> None:
             print(f"  {i + 1}/{len(rows)}")
 
 
+def ingest_rules(cur, bedrock, rows: list[dict]) -> None:
+    for i, r in enumerate(rows):
+        text = r.get("description") or r.get("text") or ""
+        vec = embed(bedrock, text)
+        cur.execute(
+            """INSERT INTO security_rules.rules
+                (title, description, severity, embedding)
+               VALUES (%s, %s, %s, %s)""",
+            (r.get("title"), text, r.get("severity"), vec),
+        )
+        if i < len(rows) - 1:
+            time.sleep(THROTTLE_MS / 1000)
+        if (i + 1) % BATCH_SIZE == 0:
+            print(f"  {i + 1}/{len(rows)}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Embed and ingest into Aurora pgvector")
     ap.add_argument("--source", required=True, help="JSONL file or directory")
@@ -99,17 +115,20 @@ def main() -> int:
         chunks_from_dir(src) if src.is_dir()
         else chunks_from_jsonl(src)
     )
-    print(f"ingest: {len(rows)} rows -> {args.schema}")
+    print(f"ingest: {len(rows)} rows → {args.schema}")
 
     t0 = time.time()
     with psycopg.connect(args.dsn) as conn:
         register_vector(conn)
         with conn.cursor() as cur:
-            ingest_docs(cur, bedrock, rows)
+            if args.schema == "devdocs":
+                ingest_docs(cur, bedrock, rows)
+            else:
+                ingest_rules(cur, bedrock, rows)
             conn.commit()
 
     elapsed = time.time() - t0
-    cost_est = len(rows) * 0.000025
+    cost_est = len(rows) * 0.000025  # ~$0.000025/row at avg token count
     print(f"done: {len(rows)} rows, {elapsed:.1f}s, ~${cost_est:.2f} embed cost")
     return 0
 
