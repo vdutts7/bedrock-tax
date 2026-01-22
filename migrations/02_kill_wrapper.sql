@@ -87,3 +87,8 @@ CREATE TABLE code_intel.branches (
 
 CREATE INDEX code_chunks_embed_idx ON code_intel.chunks USING ivfflat (embedding vector_cosine_ops);
 
+-- drop the old Bedrock integration schema (no longer needed)
+DROP SCHEMA IF EXISTS bedrock_integration CASCADE;
+
+-- after this: app uses ExecuteStatementCommand → RDS Data API → Aurora.
+-- no Bedrock Retrieve in the loop. embed once, query free.
