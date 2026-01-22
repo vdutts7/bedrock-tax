@@ -58,6 +58,44 @@ But under the hood, it decomposes into two meters that are actually **decoupled*
 
 **Core insight**: cost floor was attached to the backend (vector store), *not to the retrieval interface*
 
+## Approach
+
+| | Step | Date | Changes | Cost impact | % saved |
+|---|------|------|-------------|-------------|---------|
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/main/webp/aws-aurora.webp" width="40" height="40" alt="Aurora" /> | 1 | 2025-12-31 | <ul><li>Swap backend, keep interface</li><li>OpenSearch Serverless → Aurora pgvector</li><li>app still calls `RetrieveCommand`</li></ul> | $700/mo → $50/mo | <span style="color:#16a34a">+93%</span> |
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/main/webp/aws-rds.webp" width="40" height="40" alt="RDS" /> | 2 | 2026-01-29 | <ul><li>Drop interface to fully bypass KB</li><li>delete KB</li><li>app embeds via Titan, queries Aurora via RDS Data API</li></ul> | $0.00035/q Retrieve [quote](https://aws.amazon.com/bedrock/pricing/) → $0 Retrieve | <span style="color:#16a34a">+100%</span> |
+
+<img src="https://res.cloudinary.com/ddyc1es5v/image/upload/v1791408707/gh-repos/bedrock-tax/monthly-cost.svg" alt="Monthly cost" width="700" />
+
+**Migration path**:
+> each step is independent + can be validated before proceeding:
+
+**Step 0**:
+- Bedrock KB on OpenSearch Serverless (~$700/mo)
+- Agent + S3 docs → `Retrieve API` → OpenSearch
+
+<img src="https://res.cloudinary.com/ddyc1es5v/image/upload/v1791408709/gh-repos/bedrock-tax/phase1.svg" alt="Step 0: Original" width="360" />
+
+**Step 1**:
+- kept Bedrock KB `Retrieve API` intact- same application code, same KB config, different storage backend
+- Aurora Serverless v2 runs at **~$50/month** and **scales to zero ACU on idle** [quote](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-serverless-v2-auto-pause.html)
+- the OpenSearch Serverless floor disappeared immediately
+- see [`migrations/01_swap_store.sql`](migrations/01_swap_store.sql)
+
+<img src="https://res.cloudinary.com/ddyc1es5v/image/upload/v1791408709/gh-repos/bedrock-tax/phase2.svg" alt="Step 1: Swap store" width="360" />
+
+**Step 2**:
+- fully deleted Bedrock KB + dropped `RetrieveCommand` from the path
+- the application embeds the query using Titan v2 (`amazon.titan-embed-text-v2:0`) → sends embedding as a SQL param → then runs a cosine distance query against Aurora via `ExecuteStatementCommand` (RDS Data API)
+- see [`migrations/02_kill_wrapper.sql`](migrations/02_kill_wrapper.sql)
+
+<img src="https://res.cloudinary.com/ddyc1es5v/image/upload/v1791408710/gh-repos/bedrock-tax/phase3.svg" alt="Step 2: Kill wrapper" width="360" />
+
+**Figures**:
+- one-time embedding cost for all ~8,800 rows: **~$0.20** via Titan v2
+- per-query **retrieval** cost after step 2: **$0** (meter gone- you no longer call it)
+- left: Titan query embed (**~$0.00002/1K tok**) [quote](https://aws.amazon.com/bedrock/pricing/) + the ~$50/mo Aurora floor
+
 <!-- BADGES -->
 [github]: https://img.shields.io/badge/bedrock--tax-000000?style=for-the-badge&logo=github&logoColor=white
 [github-url]: https://github.com/vdutts7/bedrock-tax
