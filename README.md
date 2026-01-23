@@ -18,7 +18,11 @@
 
 <ol>
     <a href="#problem">Problem</a><br/>
+    <a href="#hidden-constraint">Hidden constraint</a><br/>
     <a href="#approach">Approach</a><br/>
+    <a href="#agent-era-context">Agent-era context</a><br/>
+    <a href="#embedding-strategy">Embedding strategy</a><br/>
+    <a href="#query-pattern">Query pattern</a><br/>
 </ol>
 
 <br/>
@@ -95,6 +99,36 @@ But under the hood, it decomposes into two meters that are actually **decoupled*
 - one-time embedding cost for all ~8,800 rows: **~$0.20** via Titan v2
 - per-query **retrieval** cost after step 2: **$0** (meter gone- you no longer call it)
 - left: Titan query embed (**~$0.00002/1K tok**) [quote](https://aws.amazon.com/bedrock/pricing/) + the ~$50/mo Aurora floor
+
+## Agent-era context
+
+Bedrock's `Retrieve API` at $0.00035/query [quote](https://aws.amazon.com/bedrock/pricing/) is priced for human access patterns- a few queries per session, a few sessions per day
+
+Agent traffic operates differently: a single agent session doing RAG against the KB generates retrieval calls at every turn, often multiple per turn:
+
+| Caller | Queries/day | Retrieval cost/day | Retrieval cost/mo |
+|--------|-------------|-------------------|-----------------|
+| human | ~10 | $0.004 | $0.11 |
+| agent (20-turn × 5 KB hits × 100 sessions) | 10,000 | $3.50 | $105 |
+| agent (20-turn × 5 KB hits × 1,000 sessions) | 100,000 | $35.00 | $1,050 |
+
+```mermaid
+---
+config:
+  themeVariables:
+    xyChart:
+      plotColorPalette: "#868e96,#adb5bd,#ced4da"
+---
+xychart-beta
+    title "Bedrock Retrieve cost scales with agent loop depth"
+    x-axis ["human (~10 q/day)", "agent 100 sessions", "agent 1K sessions"]
+    y-axis "$/month (Retrieve only)" 0 --> 1200
+    bar [0.11, 105, 1050]
+```
+
+Before step 1, the $700 OpenSearch floor dominated total cost + made the per-query fee invisible
+After step 1 eliminated the floor, the per-query cost became primary line item and **scaled with agent loop depth rather than user count**
+This is what motivated step 2.
 
 <!-- BADGES -->
 [github]: https://img.shields.io/badge/bedrock--tax-000000?style=for-the-badge&logo=github&logoColor=white
