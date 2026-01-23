@@ -130,6 +130,142 @@ Before step 1, the $700 OpenSearch floor dominated total cost + made the per-que
 After step 1 eliminated the floor, the per-query cost became primary line item and **scaled with agent loop depth rather than user count**
 This is what motivated step 2.
 
+## Embedding strategy
+
+### Model choice
+
+| | Embedding model | Dimensions | Cost/1K tok | Notes |
+|---|-------|-----------|-------------------|-------|
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/main/webp/aws-bedrock.webp" width="40" height="40" alt="Bedrock" /> | **`amazon.titan-embed-text-v2:0`** ✓ | 256 / 512 / 1024 | $0.00002 [quote](https://aws.amazon.com/bedrock/pricing/) | native AWS, no cross-region (chosen ✔️) |
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/refs/heads/main/webp/cohere.webp" width="40" height="40" alt="Cohere" /> | `cohere.embed-english-v3` | 1024 | $0.0001 [quote](https://aws.amazon.com/bedrock/pricing/) | 5× more expensive, better MTEB scores |
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/refs/heads/main/webp/cohere.webp" width="40" height="40" alt="Cohere" /> | `cohere.embed-multilingual-v3` | 1024 | $0.0001 [quote](https://aws.amazon.com/bedrock/pricing/) | multilingual support not needed |
+
+Titan v2 chosen over Cohere for cost:
+- at ~8,800 documents the quality difference between Titan and Cohere is negligible for documentation search
+- docs are technical English, queries are technical English, and recall difference does not justify 5× embedding cost
+- both models available in native Bedrock
+
+**Configuration**:
+- Titan v2: **1024 dimensions** (maximum), **normalization enabled** [quote](https://docs.aws.amazon.com/bedrock/latest/userguide/titan-embedding-models.html)
+- at <10K vectors, the storage overhead of 1024d vs 512d vs 256d is trivial (~30MB total)
+- higher dimensionality provides better recall on semantic search without any meaningful cost to index build time or query latency at this scale
+
+### Chunking
+
+Previous Bedrock KB setup used **hierarchical chunking** (built into its managed ingestion pipeline) [quote](https://docs.aws.amazon.com/bedrock/latest/userguide/kb-chunking.html):
+
+| Parameter | Value |
+|-----------|-------|
+| strategy | `HIERARCHICAL` |
+| level 1 (parent) | 1,500 tokens |
+| level 2 (child) | 300 tokens |
+| overlap | 60 tokens |
+
+After deleting Bedrock KB (step 2), managed chunking pipeline no longer exists:
+ - documents now stored as **pre-chunked units**
+ - upstream document preparation process produces chunks *before* they reach embedding stage
+ - ingest script caps each chunk at **8,000 characters** (Titan v2 input limit) [quote](https://docs.aws.amazon.com/bedrock/latest/userguide/titan-embedding-models.html) + embeds full chunk as a *single vector*
+
+Tradeoff:
+- simpler strategy than hierarchical chunking
+- but it shifts chunking responsibility upstream
+- for this corpus (documentation pages, rule descriptions, code metadata), the source documents were already naturally segmented into page-sized units, so loss of hierarchical retrieval was not impactful
+
+### What gets embedded vs what doesn't
+
+Not every table has embeddings- decision depends on whether data needs semantic search or whether structured/equality lookups are sufficient:
+
+<img src="https://res.cloudinary.com/ddyc1es5v/image/upload/v1791408707/gh-repos/bedrock-tax/decision-tree.svg" alt="Embed vs structured index decision tree" width="700" />
+
+| Table | Rows | Embedded | FTS | Why |
+|-------|-----:|----------|-----|-----|
+| `devdocs.chunks` | ~7,700 | ✓ vector(1024) | ✓ tsvector | documentation- needs semantic + keyword search |
+| `compliance_rules.rules` | ~1,100 | ✓ vector(1024) | ✓ tsvector | rule descriptions- needs semantic + keyword search |
+| `security_rules.owners` | ~120 | ✗ | ✗ | structured metadata- queried by team_id, name (equality) |
+| `code_intel.chunks` | ~5,600 | ✓ vector(1024) | ✗ | code context- needs semantic search, not keyword |
+| `code_intel.commits` | ~7,900 | ✗ | ✗ | structured- queried by author, date range |
+| `code_intel.contributors` | ~900 | ✗ | ✗ | structured- queried by name, email |
+| `code_intel.branches` | ~600 | ✗ | ✗ | structured- queried by branch name |
+
+Embedding every row would cost ~$0.50 instead of ~$0.20 and would add no value- you don't semantic-search a branch name or a contributor email
+- structured tables use B-tree indexes and `WHERE` equality filters
+
+### Dual-field pattern: vector + tsvector on the same row
+
+Tables that need both semantic + keyword search carry both fields on every row:
+
+```sql
+embedding   vector(1024),
+searchable  tsvector GENERATED ALWAYS AS (
+  to_tsvector('english', coalesce(title, '') || ' ' || coalesce(text, ''))
+) STORED,
+```
+
+The `GENERATED ALWAYS` column means the tsvector updates automatically on INSERT/UPDATE with zero application-side maintenance
+> the alternative- a separate FTS table or a separate indexing pipeline- adds operational complexity for no performance benefit at this scale
+
+### Distance metric: cosine over L2
+
+Previous OpenSearch setup: **HNSW with FAISS engine and L2 (Euclidean) distance**
+Aurora setup:  **ivfflat with cosine distance** (`vector_cosine_ops`, `<=>` operator)
+
+Cosine distance is better choice for normalized text embeddings:
+- Titan v2 outputs are L2-normalized by default (`normalize: true`) [quote](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-titan-embed-text.html)
+- which means cosine distance and inner product distance are equivalent
+- but cosine is more interpretable- similarity scores range from 0 to 1
+
+### RDS Data API constraints
+
+- RDS Data API (`ExecuteStatementCommand`) has a **1 MB response size limit** [quote](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/data-api.limitations.html)
+- hence why query templates use `LEFT(text, 500)` or `LEFT(text, 1000)` instead of returning full document content- at ~7,700 rows averaging several KB each, an unbounded SELECT could exceed the limit
+- the agent retrieves previews first → then fetches full content for specific rows if needed
+- Data API is also **HTTP-based and stateless** [quote](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/data-api.html):
+    - no persistent database connections ✔️
+    - no connection pool to manage ✔️
+    - no VPC peering required ✔️
+- this matters for serverless compute (ECS Fargate, Lambda) where connection pooling is **operationally expensive** and **connection leaks cause production incidents**
+
+## Query pattern
+
+Agent uses a **dumb orchestrator** pattern:
+- LLM reads registry of pre-built deterministic SQL templates → picks appropriate one → fills in param slots
+- scopes agentic decision plane down to a router-like decision tree
+- it does not handroll (i.e. generate freestyle SQL)
+- this drastically minimizes hallucination risks (see [skills-not-mcp](https://github.com/vdutts7/skills-not-mcp) for why I chose this)
+
+<img src="https://res.cloudinary.com/ddyc1es5v/image/upload/v1791408708/gh-repos/bedrock-tax/dumb-orchestrator.svg" alt="Dumb orchestrator sequence" width="700" />
+
+**Available templates:**
+
+```sql
+-- by_tool
+SELECT id, title, doc_set, LEFT(text, 500), url
+FROM devdocs.chunks WHERE tool = '{tool}' LIMIT {limit}
+
+-- by_doc_set
+SELECT id, tool, title, LEFT(text, 500), url
+FROM devdocs.chunks WHERE doc_set = '{doc_set}' LIMIT {limit}
+
+-- fulltext_search
+SELECT tool, title, LEFT(text, 500), url
+FROM devdocs.chunks WHERE searchable @@ to_tsquery('english', '{terms}') LIMIT {limit}
+
+-- semantic_search
+SELECT tool, doc_set, title, LEFT(text, 1000), url,
+       ROUND((1 - (embedding <=> $vec::vector))::numeric, 3) as similarity
+FROM devdocs.chunks ORDER BY embedding <=> $vec::vector LIMIT {limit}
+```
+
+Three search modes on the same table, same indexes- the agent routes the mode based on the query:
+
+<img src="https://res.cloudinary.com/ddyc1es5v/image/upload/v1791408711/gh-repos/bedrock-tax/three-search-templates.svg" alt="Three search modes" width="700" />
+
+| Mode | Mechanism | Index | Example |
+|------|-----------|-------|---------|
+| semantic | cosine distance (`<=>`) | ivfflat | "how do I deploy with CDK?" |
+| fulltext | `tsvector @@ tsquery` | GIN | "lambda cold start" |
+| structured | WHERE equality | B-tree | `tool = 'cdk'`, `severity = 'CRITICAL'` |
+
 <!-- BADGES -->
 [github]: https://img.shields.io/badge/bedrock--tax-000000?style=for-the-badge&logo=github&logoColor=white
 [github-url]: https://github.com/vdutts7/bedrock-tax
