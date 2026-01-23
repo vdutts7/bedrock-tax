@@ -323,7 +323,7 @@ bedrock-tax/
 
 The `*_data_api.py` scripts are the primary interface:
 - they use `ExecuteStatementCommand` (RDS Data API, which is how the production agent queries Aurora, post KB-deletion)
-- no VPC, no connection pool, no direct pg connection
+- no VPC, no connection pool, no psycopg
 - `query.py` / `ingest.py` scripts are psycopg alternatives for environments with direct PostgreSQL access (e.g., via `psql` or VPC-connected client)
 
 ## Stack
