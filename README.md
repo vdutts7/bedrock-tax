@@ -22,7 +22,11 @@
     <a href="#approach">Approach</a><br/>
     <a href="#agent-era-context">Agent-era context</a><br/>
     <a href="#embedding-strategy">Embedding strategy</a><br/>
+    <a href="#schema">Schema</a><br/>
     <a href="#query-pattern">Query pattern</a><br/>
+    <a href="#repo-structure">Repo structure</a><br/>
+    <a href="#stack">Stack</a><br/>
+    <a href="#contact">Contact</a>
 </ol>
 
 <br/>
@@ -47,6 +51,7 @@ But agent traffic is **NOT** human traffic:
 - a human triaging a ticket may search the KB **~5 times/hr** → skim results → move on
 - the agent doing the same triage blasts the KB **20+ times/5 sec**- every tool call, often further fanning out into parallel crosswalk lookups across docs, security rules, commit history
 - a busy oncall week with just **1,000 agent sessions** = **100,000 queries** = **$35/day** in Retrieve fees alone- *on top of the $700 floor(!)*
+
 
 ## Hidden constraint
 
@@ -225,10 +230,40 @@ Cosine distance is better choice for normalized text embeddings:
     - no VPC peering required ✔️
 - this matters for serverless compute (ECS Fargate, Lambda) where connection pooling is **operationally expensive** and **connection leaks cause production incidents**
 
+## Schema
+
+```
+cluster: Aurora Serverless v2, PostgreSQL 16.4, pgvector 0.7.3
+access:  RDS Data API (ExecuteStatementCommand, HTTP- no connection pool)
+embed:   amazon.titan-embed-text-v2:0, 1024 dimensions
+```
+
+Full DDL: [`schema.sql`](schema.sql)
+
+| schema | table | rows | embedding | fts | indexes |
+|--------|-------|-----:|-----------|-----|---------|
+| `devdocs` | `chunks` | ~7,700 | `vector(1024)` | `tsvector` | ivfflat, GIN, B-tree(tool, doc_set) |
+| `security_rules` | `rules` | ~1,100 | `vector(1024)` | `tsvector` | ivfflat, GIN, B-tree(severity, state) |
+| `security_rules` | `owners` | ~120 | n/a | n/a | n/a |
+| `code_intel` | `chunks` | ~5,600 | `vector(1024)` | n/a | ivfflat |
+| `code_intel` | `commits` | ~7,900 | n/a | n/a | n/a |
+| `code_intel` | `contributors` | ~900 | n/a | n/a | n/a |
+| `code_intel` | `branches` | ~600 | n/a | n/a | n/a |
+
+**Index strategy:**
+
+- **ivfflat** over HNSW for vector search:
+    - with <10K vectors per table, ivfflat builds faster + uses less memory
+    - HNSW only becomes worthwhile >100K+ rows
+- **GIN** on `searchable` column- supports full-text search via `tsvector @@ tsquery`
+- **B-tree** on structured columns (`tool`, `doc_set`, `severity`, `state`)- for WHERE equality filters, not vector math
+- every embedded row carries both `vector(1024)` and a `tsvector GENERATED ALWAYS` column
+    - semantic search and full-text search operate on the same row without needing a separate table or a separate indexing pipeline
+
 ## Query pattern
 
 Agent uses a **dumb orchestrator** pattern:
-- LLM reads registry of pre-built deterministic SQL templates → picks appropriate one → fills in param slots
+- LLM reads registry of pre-built deteministic SQL templates → picks appropriate one → fills in param slots
 - scopes agentic decision plane down to a router-like decision tree
 - it does not handroll (i.e. generate freestyle SQL)
 - this drastically minimizes hallucination risks (see [skills-not-mcp](https://github.com/vdutts7/skills-not-mcp) for why I chose this)
@@ -266,7 +301,54 @@ Three search modes on the same table, same indexes- the agent routes the mode ba
 | fulltext | `tsvector @@ tsquery` | GIN | "lambda cold start" |
 | structured | WHERE equality | B-tree | `tool = 'cdk'`, `severity = 'CRITICAL'` |
 
+## Repo structure
+
+```
+bedrock-tax/
+├── schema.sql                  # full DDL- three schemas, pgvector, ivfflat, tsvector
+├── migrations/
+│   ├── 01_swap_store.sql       # step 1: OpenSearch Serverless → Aurora pgvector
+│   └── 02_kill_wrapper.sql     # step 2: delete Bedrock KB, go direct SQL
+├── query_data_api.py           # query via RDS Data API (prod pattern)
+├── ingest_data_api.py          # ingest + embed via RDS Data API
+├── query.py                    # query via psycopg (alternative, needs DATABASE_URL)
+├── ingest.py                   # ingest + embed via psycopg (alternative)
+├── example/
+│   └── sample_docs.jsonl       # 10 sample docs to test ingest + query
+├── setup.md                    # Aurora cluster creation, IAM, migration guide
+├── .env.example                # required env vars (CLUSTER_ARN, SECRET_ARN, etc.)
+├── requirements.txt            # boto3, psycopg, pgvector
+└── README.md
+```
+
+The `*_data_api.py` scripts are the primary interface:
+- they use `ExecuteStatementCommand` (RDS Data API, which is how the production agent queries Aurora, post KB-deletion)
+- no VPC, no connection pool, no direct pg connection
+- `query.py` / `ingest.py` scripts are psycopg alternatives for environments with direct PostgreSQL access (e.g., via `psql` or VPC-connected client)
+
+## Stack
+
+| | component | detail |
+|---|---|---|
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/main/webp/aws-aurora.webp" width="40" height="40" alt="Aurora" /> | Aurora Serverless v2 | PostgreSQL 16.4, pgvector 0.7.3 |
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/main/webp/aws-bedrock.webp" width="40" height="40" alt="Bedrock" /> | Titan Embed v2 | `amazon.titan-embed-text-v2:0`, 1024 dimensions |
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/main/webp/aws-rds.webp" width="40" height="40" alt="RDS" /> | RDS Data API | `ExecuteStatementCommand`, HTTP, no connection pool |
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/main/webp/python.webp" width="40" height="40" alt="Python" /> | Python | `boto3`, `psycopg`, pgvector |
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/main/webp/aws-s3.webp" width="40" height="40" alt="S3" /> | S3 | document source- raw docs ingested from here |
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/main/webp/aws-opensearch.webp" width="40" height="40" alt="OpenSearch" /> | OpenSearch Serverless | replaced- was the $700/mo floor |
+
+**Model hierarchy** (agent runtime):
+
+| | Role | Model | Note |
+|---|------|-------|------|
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/refs/heads/main/webp/claude.webp" width="40" height="40" alt="Claude" /> | primary | `claude-3-5-haiku-20241022` | tool routing and synthesis |
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/refs/heads/main/webp/claude.webp" width="40" height="40" alt="Claude" /> | delegate | `claude-3-haiku-20240307` | sub-task execution |
+| <img src="https://raw.githubusercontent.com/vdutts7/squircle/main/webp/aws-bedrock.webp" width="40" height="40" alt="Bedrock" /> | embedding | `amazon.titan-embed-text-v2:0` | 1024 dimensions, $0.00002/1K tokens [quote](https://aws.amazon.com/bedrock/pricing/) |
+
+## Contact
+
+<a href="https://vd7.io"><img src="https://res.cloudinary.com/ddyc1es5v/image/upload/v1773910810/readme-badges/readme-badge-vd7.png" alt="vd7.io" height="40" /></a> &nbsp; <a href="https://x.com/vdutts7"><img src="https://res.cloudinary.com/ddyc1es5v/image/upload/v1773910817/readme-badges/readme-badge-x.png" alt="/vdutts7" height="40" /></a>
+
 <!-- BADGES -->
 [github]: https://img.shields.io/badge/bedrock--tax-000000?style=for-the-badge&logo=github&logoColor=white
 [github-url]: https://github.com/vdutts7/bedrock-tax
-
