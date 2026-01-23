@@ -263,7 +263,7 @@ Full DDL: [`schema.sql`](schema.sql)
 ## Query pattern
 
 Agent uses a **dumb orchestrator** pattern:
-- LLM reads registry of pre-built deteministic SQL templates → picks appropriate one → fills in param slots
+- LLM reads registry of pre-built deterministic SQL templates → picks appropriate one → fills in param slots
 - scopes agentic decision plane down to a router-like decision tree
 - it does not handroll (i.e. generate freestyle SQL)
 - this drastically minimizes hallucination risks (see [skills-not-mcp](https://github.com/vdutts7/skills-not-mcp) for why I chose this)
