@@ -113,3 +113,18 @@ python query_data_api.py "lambda cold start" --mode fulltext --schema devdocs
 # structured filter (B-tree indexed equality)
 python query_data_api.py "cdk" --mode structured --column tool --schema devdocs
 ```
+
+## Migrating from Bedrock KB on OpenSearch Serverless
+
+If you currently have a Bedrock Knowledge Base backed by OpenSearch Serverless:
+
+1. Create the Aurora cluster and schema (steps 1-3 above)
+2. In the Bedrock console, edit your KB configuration → change the vector store from OpenSearch to Aurora pgvector (provide the cluster ARN, secret ARN, and table mapping)
+3. Re-sync the KB data source — Bedrock will re-embed and write to Aurora
+4. Your existing `RetrieveCommand` calls continue to work, but the OpenSearch Serverless collection (and its $700/mo floor) can be deleted
+
+To then remove the Bedrock KB wrapper entirely (step 2 of this repo's approach):
+
+5. Replace `RetrieveCommand` calls in your application with direct SQL via `ExecuteStatementCommand` (see `query_data_api.py`)
+6. Delete the Bedrock Knowledge Base — it is no longer in the retrieval path
+7. Per-query Retrieve cost drops from $0.00035 to $0
